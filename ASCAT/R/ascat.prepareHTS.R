@@ -17,7 +17,8 @@ ascat.getAlleleCounts = function(seq.file, output.file, g1000.loci, min.base.qua
               "-l", g1000.loci,
               "-o", output.file,
               "-m", min.base.qual,
-              "-q", min.map.qual)
+              "-q", min.map.qual,
+              "-f 1")
   # alleleCounter >= v4.0.0 is sped up considerably on 1000G loci when run in dense-snp mode            
   counter_version = system(paste(allelecounter.exe, "--version"), intern = T)
   if (as.integer(substr(x = counter_version, start = 1, stop = 1)) >= 4) {
