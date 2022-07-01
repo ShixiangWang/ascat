@@ -44,7 +44,7 @@ ascat.getAlleleCounts = function(seq.file, output.file, g1000.loci, min.base.qua
 #' @param g1000file.prefix Prefix to where 1000 Genomes reference files can be found.
 #' @param gender Gender information, either 'XX' (=female) or 'XY' (=male).
 #' @param chrom_names A vector with allowed chromosome names (optional, default=c(1:22,'X')).
-#' @param minCounts Minimum depth, in mormal, required for a SNP to be considered (optional, default=8).
+#' @param minCounts Minimum depth, in normal, required for a SNP to be considered (optional, default=8).
 #' @param BED_file A BED file for only looking at SNPs within specific intervals (optional, default=NA).
 #' @param probloci_file A file (chromosome <tab> position; no header) containing specific loci to ignore (optional, default=NA).
 #' @param seed A seed to be set for when randomising the alleles (optional, default=as.integer(Sys.time())).
@@ -53,105 +53,286 @@ ascat.getAlleleCounts = function(seq.file, output.file, g1000.loci, min.base.qua
 ascat.getBAFsAndLogRs = function(samplename, tumourAlleleCountsFile.prefix, normalAlleleCountsFile.prefix, tumourLogR_file, tumourBAF_file, normalLogR_file, normalBAF_file, g1000file.prefix, gender, chrom_names=c(1:22,'X'), minCounts=8, BED_file=NA, probloci_file=NA, seed=as.integer(Sys.time())) {
   set.seed(seed)
   stopifnot(gender %in% c('XX','XY'))
-  # Load data, only keep SNPs with enough coverage
-  tumour_input_data = readAlleleCountFiles(tumourAlleleCountsFile.prefix, ".txt", chrom_names, 1)
-  normal_input_data = readAlleleCountFiles(normalAlleleCountsFile.prefix, ".txt", chrom_names, minCounts)
-  allele_data = readG1000SnpFiles(g1000file.prefix, ".txt", chrom_names)
-  # Synchronise DFs
-  matched_data = Reduce(intersect, list(rownames(tumour_input_data), rownames(normal_input_data), rownames(allele_data)))
-  tumour_input_data = tumour_input_data[matched_data,]
-  normal_input_data = normal_input_data[matched_data,]
-  allele_data = allele_data[matched_data,]
-  rm(matched_data)
-  # If a probloci file is provided, remove those
-  if (!is.na(probloci_file)) {
-    stopifnot(file.exists(probloci_file) && file.info(probloci_file)$size>0)
-    probloci=data.frame(readr::read_tsv(probloci_file,col_names=T,col_types='ci',progress=F),stringsAsFactors=F)
-    probloci=paste0(probloci[,1],'_',probloci[,2])
-    probloci=rownames(tumour_input_data) %in% probloci
-    if (sum(probloci>0)) {
-      tumour_input_data = tumour_input_data[!probloci,]
-      normal_input_data = normal_input_data[!probloci,]
-      allele_data = allele_data[-probloci,]
+  if (is.na(normalAlleleCountsFile.prefix)) {
+    # Load data, only keep SNPs with enough coverage
+    tumour_input_data = readAlleleCountFiles(tumourAlleleCountsFile.prefix, ".txt", chrom_names, 1)
+    allele_data = readG1000SnpFiles(g1000file.prefix, ".txt", chrom_names)
+    # Synchronise DFs
+    matched_data = Reduce(intersect, list(rownames(tumour_input_data), rownames(allele_data)))
+    tumour_input_data = tumour_input_data[matched_data,]
+    allele_data = allele_data[matched_data,]
+    rm(matched_data)
+    # If a probloci file is provided, remove those
+    if (!is.na(probloci_file)) {
+      stopifnot(file.exists(probloci_file) && file.info(probloci_file)$size>0)
+      probloci=data.frame(readr::read_tsv(probloci_file,col_names=T,col_types='ci',progress=F),stringsAsFactors=F)
+      probloci=paste0(probloci[,1],'_',probloci[,2])
+      probloci=rownames(tumour_input_data) %in% probloci
+      if (sum(probloci>0)) {
+        tumour_input_data = tumour_input_data[!probloci,]
+        allele_data = allele_data[-probloci,]
+      }
+      rm(probloci)
     }
-    rm(probloci)
+    stopifnot(identical(allele_data[,1],tumour_input_data[,1]))
+    stopifnot(identical(allele_data[,2],tumour_input_data[,2]))
+    tumour_input_data = tumour_input_data[,3:6]
+    # If a BED is provided, only look at SNPs within those intervals
+    if (!is.na(BED_file)) {
+      stopifnot(file.exists(BED_file) && file.info(BED_file)$size>0)
+      BED=read.table(BED_file,sep='\t',header=F,stringsAsFactors=F)[,1:3]
+      colnames(BED)=c('chr','start','end')
+      BED$chr=gsub('^chr','',BED$chr)
+      BED$start=BED$start+1 # Start is 0-based in BED files
+      BED=BED[BED$chr %in% chrom_names,]
+      if (nrow(BED)==0) stop('Major issue with BED file, please double-check its content')
+      requireNamespace("GenomicRanges")
+      requireNamespace("IRanges")
+      overlaps=GenomicRanges::findOverlaps(GenomicRanges::GRanges(seqnames=BED$chr,ranges=IRanges::IRanges(start=BED$start,end=BED$end)),
+                                          GenomicRanges::GRanges(seqnames=allele_data$chromosome,ranges=IRanges::IRanges(start=allele_data$position,end=allele_data$position)))
+      tumour_input_data=tumour_input_data[overlaps@to,]
+      allele_data=allele_data[overlaps@to,]
+      rm(BED,overlaps)
+    }
+    # Obtain depth for both alleles for tumour and normal
+    len = nrow(allele_data)
+    tumour_input_data$REF=tumour_input_data[cbind(1:len,allele_data[,3])]
+    tumour_input_data$ALT=tumour_input_data[cbind(1:len,allele_data[,4])]
+    # Make sure that ALT+REF fit with minimal counts
+    TO_KEEP=which(tumour_input_data$REF+tumour_input_data$ALT>=1)
+    stopifnot(length(TO_KEEP)>0)
+    allele_data=allele_data[TO_KEEP,]
+    tumour_input_data=tumour_input_data[TO_KEEP,]s
+    rm(TO_KEEP)
+    # Prepare allele counts to derive BAF and logR
+    len = nrow(allele_data)
+    mutCount1 = tumour_input_data$REF
+    mutCount2 = tumour_input_data$ALT
+    totalTumour = mutCount1 + mutCount2
+    rm(tumour_input_data)
+    tumourBAF = vector(length=len, mode="numeric")
+    tumourLogR = vector(length=len, mode="numeric")
+    # Randomise A and B alleles
+    selector = round(runif(len))
+    tumourBAF[which(selector==0)] = mutCount1[which(selector==0)] / totalTumour[which(selector==0)]
+    tumourBAF[which(selector==1)] = mutCount2[which(selector==1)] / totalTumour[which(selector==1)]
+    # Normalise tumourLogR to normalLogR (TODO, how to do without normal)
+    #tumourLogR = totalTumour/totalNormal
+    tumourLogR = log2(tumourLogR/mean(tumourLogR, na.rm=T))
+    rm(selector)
+    # For males, chrX needs to be adjusted as logR baseline will be 0 because of T/N ratio. Add -1 to logR here so gamma=1 in ascat.runAscat will get CN states.
+    if (gender=='XY') {
+      tumourLogR[allele_data$chromosome=='X']=tumourLogR[allele_data$chromosome=='X']-1
+    }
+    # Create the output data.frames
+    tumor.LogR = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, logr=tumourLogR, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    tumor.BAF = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, baf=tumourBAF, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    colnames(tumor.LogR)[3]=samplename
+    colnames(tumor.BAF)[3]=samplename
+    # Save data.frames to disk
+    write.table(tumor.LogR,file=tumourLogR_file, row.names=T, quote=F, sep="\t", col.names=NA)
+    write.table(tumor.BAF,file=tumourBAF_file, row.names=T, quote=F, sep="\t", col.names=NA)
+  } else {
+    # Load data, only keep SNPs with enough coverage
+    tumour_input_data = readAlleleCountFiles(tumourAlleleCountsFile.prefix, ".txt", chrom_names, 1)
+    normal_input_data = readAlleleCountFiles(normalAlleleCountsFile.prefix, ".txt", chrom_names, minCounts)
+    allele_data = readG1000SnpFiles(g1000file.prefix, ".txt", chrom_names)
+    # Synchronise DFs
+    matched_data = Reduce(intersect, list(rownames(tumour_input_data), rownames(normal_input_data), rownames(allele_data)))
+    tumour_input_data = tumour_input_data[matched_data,]
+    normal_input_data = normal_input_data[matched_data,]
+    allele_data = allele_data[matched_data,]
+    rm(matched_data)
+    # If a probloci file is provided, remove those
+    if (!is.na(probloci_file)) {
+      stopifnot(file.exists(probloci_file) && file.info(probloci_file)$size>0)
+      probloci=data.frame(readr::read_tsv(probloci_file,col_names=T,col_types='ci',progress=F),stringsAsFactors=F)
+      probloci=paste0(probloci[,1],'_',probloci[,2])
+      probloci=rownames(tumour_input_data) %in% probloci
+      if (sum(probloci>0)) {
+        tumour_input_data = tumour_input_data[!probloci,]
+        normal_input_data = normal_input_data[!probloci,]
+        allele_data = allele_data[-probloci,]
+      }
+      rm(probloci)
+    }
+    stopifnot(identical(allele_data[,1],tumour_input_data[,1]) && identical(allele_data[,1],normal_input_data[,1]))
+    stopifnot(identical(allele_data[,2],tumour_input_data[,2]) && identical(allele_data[,2],normal_input_data[,2]))
+    tumour_input_data = tumour_input_data[,3:6]
+    normal_input_data = normal_input_data[,3:6]
+    # If a BED is provided, only look at SNPs within those intervals
+    if (!is.na(BED_file)) {
+      stopifnot(file.exists(BED_file) && file.info(BED_file)$size>0)
+      BED=read.table(BED_file,sep='\t',header=F,stringsAsFactors=F)[,1:3]
+      colnames(BED)=c('chr','start','end')
+      BED$chr=gsub('^chr','',BED$chr)
+      BED$start=BED$start+1 # Start is 0-based in BED files
+      BED=BED[BED$chr %in% chrom_names,]
+      if (nrow(BED)==0) stop('Major issue with BED file, please double-check its content')
+      requireNamespace("GenomicRanges")
+      requireNamespace("IRanges")
+      overlaps=GenomicRanges::findOverlaps(GenomicRanges::GRanges(seqnames=BED$chr,ranges=IRanges::IRanges(start=BED$start,end=BED$end)),
+                                          GenomicRanges::GRanges(seqnames=allele_data$chromosome,ranges=IRanges::IRanges(start=allele_data$position,end=allele_data$position)))
+      tumour_input_data=tumour_input_data[overlaps@to,]
+      normal_input_data=normal_input_data[overlaps@to,]
+      allele_data=allele_data[overlaps@to,]
+      rm(BED,overlaps)
+    }
+    # Obtain depth for both alleles for tumour and normal
+    len = nrow(allele_data)
+    tumour_input_data$REF=tumour_input_data[cbind(1:len,allele_data[,3])]
+    tumour_input_data$ALT=tumour_input_data[cbind(1:len,allele_data[,4])]
+    normal_input_data$REF=normal_input_data[cbind(1:len,allele_data[,3])]
+    normal_input_data$ALT=normal_input_data[cbind(1:len,allele_data[,4])]
+    # Make sure that ALT+REF fit with minimal counts
+    TO_KEEP=which(tumour_input_data$REF+tumour_input_data$ALT>=1 & normal_input_data$REF+normal_input_data$ALT>=minCounts)
+    stopifnot(length(TO_KEEP)>0)
+    allele_data=allele_data[TO_KEEP,]
+    tumour_input_data=tumour_input_data[TO_KEEP,]
+    normal_input_data=normal_input_data[TO_KEEP,]
+    rm(TO_KEEP)
+    # Prepare allele counts to derive BAF and logR
+    len = nrow(allele_data)
+    mutCount1 = tumour_input_data$REF
+    mutCount2 = tumour_input_data$ALT
+    totalTumour = mutCount1 + mutCount2
+    normCount1 = normal_input_data$REF
+    normCount2 = normal_input_data$ALT
+    totalNormal = normCount1 + normCount2
+    rm(tumour_input_data,normal_input_data)
+    normalBAF = vector(length=len, mode="numeric")
+    tumourBAF = vector(length=len, mode="numeric")
+    normalLogR = vector(length=len, mode="numeric")
+    tumourLogR = vector(length=len, mode="numeric")
+    # Randomise A and B alleles
+    selector = round(runif(len))
+    normalBAF[which(selector==0)] = normCount1[which(selector==0)] / totalNormal[which(selector==0)]
+    normalBAF[which(selector==1)] = normCount2[which(selector==1)] / totalNormal[which(selector==1)]
+    tumourBAF[which(selector==0)] = mutCount1[which(selector==0)] / totalTumour[which(selector==0)]
+    tumourBAF[which(selector==1)] = mutCount2[which(selector==1)] / totalTumour[which(selector==1)]
+    # Normalise tumourLogR to normalLogR
+    tumourLogR = totalTumour/totalNormal
+    tumourLogR = log2(tumourLogR/mean(tumourLogR, na.rm=T))
+    rm(selector)
+    # For males, chrX needs to be adjusted as logR baseline will be 0 because of T/N ratio. Add -1 to logR here so gamma=1 in ascat.runAscat will get CN states.
+    if (gender=='XY') {
+      tumourLogR[allele_data$chromosome=='X']=tumourLogR[allele_data$chromosome=='X']-1
+    }
+    # Create the output data.frames
+    tumor.LogR = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, logr=tumourLogR, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    tumor.BAF = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, baf=tumourBAF, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    germline.LogR = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, logr=normalLogR, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    germline.BAF = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, baf=normalBAF, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    colnames(tumor.LogR)[3]=samplename
+    colnames(tumor.BAF)[3]=samplename
+    colnames(germline.LogR)[3]=samplename
+    colnames(germline.BAF)[3]=samplename
+    # Save data.frames to disk
+    write.table(tumor.LogR,file=tumourLogR_file, row.names=T, quote=F, sep="\t", col.names=NA)
+    write.table(tumor.BAF,file=tumourBAF_file, row.names=T, quote=F, sep="\t", col.names=NA)
+    write.table(germline.LogR,file=normalLogR_file, row.names=T, quote=F, sep="\t", col.names=NA)
+    write.table(germline.BAF,file=normalBAF_file, row.names=T, quote=F, sep="\t", col.names=NA) # Load data, only keep SNPs with enough coverage
+    tumour_input_data = readAlleleCountFiles(tumourAlleleCountsFile.prefix, ".txt", chrom_names, 1)
+    normal_input_data = readAlleleCountFiles(normalAlleleCountsFile.prefix, ".txt", chrom_names, minCounts)
+    allele_data = readG1000SnpFiles(g1000file.prefix, ".txt", chrom_names)
+    # Synchronise DFs
+    matched_data = Reduce(intersect, list(rownames(tumour_input_data), rownames(normal_input_data), rownames(allele_data)))
+    tumour_input_data = tumour_input_data[matched_data,]
+    normal_input_data = normal_input_data[matched_data,]
+    allele_data = allele_data[matched_data,]
+    rm(matched_data)
+    # If a probloci file is provided, remove those
+    if (!is.na(probloci_file)) {
+      stopifnot(file.exists(probloci_file) && file.info(probloci_file)$size>0)
+      probloci=data.frame(readr::read_tsv(probloci_file,col_names=T,col_types='ci',progress=F),stringsAsFactors=F)
+      probloci=paste0(probloci[,1],'_',probloci[,2])
+      probloci=rownames(tumour_input_data) %in% probloci
+      if (sum(probloci>0)) {
+        tumour_input_data = tumour_input_data[!probloci,]
+        normal_input_data = normal_input_data[!probloci,]
+        allele_data = allele_data[-probloci,]
+      }
+      rm(probloci)
+    }
+    stopifnot(identical(allele_data[,1],tumour_input_data[,1]) && identical(allele_data[,1],normal_input_data[,1]))
+    stopifnot(identical(allele_data[,2],tumour_input_data[,2]) && identical(allele_data[,2],normal_input_data[,2]))
+    tumour_input_data = tumour_input_data[,3:6]
+    normal_input_data = normal_input_data[,3:6]
+    # If a BED is provided, only look at SNPs within those intervals
+    if (!is.na(BED_file)) {
+      stopifnot(file.exists(BED_file) && file.info(BED_file)$size>0)
+      BED=read.table(BED_file,sep='\t',header=F,stringsAsFactors=F)[,1:3]
+      colnames(BED)=c('chr','start','end')
+      BED$chr=gsub('^chr','',BED$chr)
+      BED$start=BED$start+1 # Start is 0-based in BED files
+      BED=BED[BED$chr %in% chrom_names,]
+      if (nrow(BED)==0) stop('Major issue with BED file, please double-check its content')
+      requireNamespace("GenomicRanges")
+      requireNamespace("IRanges")
+      overlaps=GenomicRanges::findOverlaps(GenomicRanges::GRanges(seqnames=BED$chr,ranges=IRanges::IRanges(start=BED$start,end=BED$end)),
+                                          GenomicRanges::GRanges(seqnames=allele_data$chromosome,ranges=IRanges::IRanges(start=allele_data$position,end=allele_data$position)))
+      tumour_input_data=tumour_input_data[overlaps@to,]
+      normal_input_data=normal_input_data[overlaps@to,]
+      allele_data=allele_data[overlaps@to,]
+      rm(BED,overlaps)
+    }
+    # Obtain depth for both alleles for tumour and normal
+    len = nrow(allele_data)
+    tumour_input_data$REF=tumour_input_data[cbind(1:len,allele_data[,3])]
+    tumour_input_data$ALT=tumour_input_data[cbind(1:len,allele_data[,4])]
+    normal_input_data$REF=normal_input_data[cbind(1:len,allele_data[,3])]
+    normal_input_data$ALT=normal_input_data[cbind(1:len,allele_data[,4])]
+    # Make sure that ALT+REF fit with minimal counts
+    TO_KEEP=which(tumour_input_data$REF+tumour_input_data$ALT>=1 & normal_input_data$REF+normal_input_data$ALT>=minCounts)
+    stopifnot(length(TO_KEEP)>0)
+    allele_data=allele_data[TO_KEEP,]
+    tumour_input_data=tumour_input_data[TO_KEEP,]
+    normal_input_data=normal_input_data[TO_KEEP,]
+    rm(TO_KEEP)
+    # Prepare allele counts to derive BAF and logR
+    len = nrow(allele_data)
+    mutCount1 = tumour_input_data$REF
+    mutCount2 = tumour_input_data$ALT
+    totalTumour = mutCount1 + mutCount2
+    normCount1 = normal_input_data$REF
+    normCount2 = normal_input_data$ALT
+    totalNormal = normCount1 + normCount2
+    rm(tumour_input_data,normal_input_data)
+    normalBAF = vector(length=len, mode="numeric")
+    tumourBAF = vector(length=len, mode="numeric")
+    normalLogR = vector(length=len, mode="numeric")
+    tumourLogR = vector(length=len, mode="numeric")
+    # Randomise A and B alleles
+    selector = round(runif(len))
+    normalBAF[which(selector==0)] = normCount1[which(selector==0)] / totalNormal[which(selector==0)]
+    normalBAF[which(selector==1)] = normCount2[which(selector==1)] / totalNormal[which(selector==1)]
+    tumourBAF[which(selector==0)] = mutCount1[which(selector==0)] / totalTumour[which(selector==0)]
+    tumourBAF[which(selector==1)] = mutCount2[which(selector==1)] / totalTumour[which(selector==1)]
+    # Normalise tumourLogR to normalLogR
+    tumourLogR = totalTumour/totalNormal
+    tumourLogR = log2(tumourLogR/mean(tumourLogR, na.rm=T))
+    rm(selector)
+    # For males, chrX needs to be adjusted as logR baseline will be 0 because of T/N ratio. Add -1 to logR here so gamma=1 in ascat.runAscat will get CN states.
+    if (gender=='XY') {
+      tumourLogR[allele_data$chromosome=='X']=tumourLogR[allele_data$chromosome=='X']-1
+    }
+    # Create the output data.frames
+    tumor.LogR = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, logr=tumourLogR, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    tumor.BAF = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, baf=tumourBAF, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    germline.LogR = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, logr=normalLogR, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    germline.BAF = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, baf=normalBAF, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
+    colnames(tumor.LogR)[3]=samplename
+    colnames(tumor.BAF)[3]=samplename
+    colnames(germline.LogR)[3]=samplename
+    colnames(germline.BAF)[3]=samplename
+    # Save data.frames to disk
+    write.table(tumor.LogR,file=tumourLogR_file, row.names=T, quote=F, sep="\t", col.names=NA)
+    write.table(tumor.BAF,file=tumourBAF_file, row.names=T, quote=F, sep="\t", col.names=NA)
+    write.table(germline.LogR,file=normalLogR_file, row.names=T, quote=F, sep="\t", col.names=NA)
+    write.table(germline.BAF,file=normalBAF_file, row.names=T, quote=F, sep="\t", col.names=NA)
   }
-  stopifnot(identical(allele_data[,1],tumour_input_data[,1]) && identical(allele_data[,1],normal_input_data[,1]))
-  stopifnot(identical(allele_data[,2],tumour_input_data[,2]) && identical(allele_data[,2],normal_input_data[,2]))
-  tumour_input_data = tumour_input_data[,3:6]
-  normal_input_data = normal_input_data[,3:6]
-  # If a BED is provided, only look at SNPs within those intervals
-  if (!is.na(BED_file)) {
-    stopifnot(file.exists(BED_file) && file.info(BED_file)$size>0)
-    BED=read.table(BED_file,sep='\t',header=F,stringsAsFactors=F)[,1:3]
-    colnames(BED)=c('chr','start','end')
-    BED$chr=gsub('^chr','',BED$chr)
-    BED$start=BED$start+1 # Start is 0-based in BED files
-    BED=BED[BED$chr %in% chrom_names,]
-    if (nrow(BED)==0) stop('Major issue with BED file, please double-check its content')
-    requireNamespace("GenomicRanges")
-    requireNamespace("IRanges")
-    overlaps=GenomicRanges::findOverlaps(GenomicRanges::GRanges(seqnames=BED$chr,ranges=IRanges::IRanges(start=BED$start,end=BED$end)),
-                                         GenomicRanges::GRanges(seqnames=allele_data$chromosome,ranges=IRanges::IRanges(start=allele_data$position,end=allele_data$position)))
-    tumour_input_data=tumour_input_data[overlaps@to,]
-    normal_input_data=normal_input_data[overlaps@to,]
-    allele_data=allele_data[overlaps@to,]
-    rm(BED,overlaps)
-  }
-  # Obtain depth for both alleles for tumour and normal
-  len = nrow(allele_data)
-  tumour_input_data$REF=tumour_input_data[cbind(1:len,allele_data[,3])]
-  tumour_input_data$ALT=tumour_input_data[cbind(1:len,allele_data[,4])]
-  normal_input_data$REF=normal_input_data[cbind(1:len,allele_data[,3])]
-  normal_input_data$ALT=normal_input_data[cbind(1:len,allele_data[,4])]
-  # Make sure that ALT+REF fit with minimal counts
-  TO_KEEP=which(tumour_input_data$REF+tumour_input_data$ALT>=1 & normal_input_data$REF+normal_input_data$ALT>=minCounts)
-  stopifnot(length(TO_KEEP)>0)
-  allele_data=allele_data[TO_KEEP,]
-  tumour_input_data=tumour_input_data[TO_KEEP,]
-  normal_input_data=normal_input_data[TO_KEEP,]
-  rm(TO_KEEP)
-  # Prepare allele counts to derive BAF and logR
-  len = nrow(allele_data)
-  mutCount1 = tumour_input_data$REF
-  mutCount2 = tumour_input_data$ALT
-  totalTumour = mutCount1 + mutCount2
-  normCount1 = normal_input_data$REF
-  normCount2 = normal_input_data$ALT
-  totalNormal = normCount1 + normCount2
-  rm(tumour_input_data,normal_input_data)
-  normalBAF = vector(length=len, mode="numeric")
-  tumourBAF = vector(length=len, mode="numeric")
-  normalLogR = vector(length=len, mode="numeric")
-  tumourLogR = vector(length=len, mode="numeric")
-  # Randomise A and B alleles
-  selector = round(runif(len))
-  normalBAF[which(selector==0)] = normCount1[which(selector==0)] / totalNormal[which(selector==0)]
-  normalBAF[which(selector==1)] = normCount2[which(selector==1)] / totalNormal[which(selector==1)]
-  tumourBAF[which(selector==0)] = mutCount1[which(selector==0)] / totalTumour[which(selector==0)]
-  tumourBAF[which(selector==1)] = mutCount2[which(selector==1)] / totalTumour[which(selector==1)]
-  # Normalise tumourLogR to normalLogR
-  tumourLogR = totalTumour/totalNormal
-  tumourLogR = log2(tumourLogR/mean(tumourLogR, na.rm=T))
-  rm(selector)
-  # For males, chrX needs to be adjusted as logR baseline will be 0 because of T/N ratio. Add -1 to logR here so gamma=1 in ascat.runAscat will get CN states.
-  if (gender=='XY') {
-    tumourLogR[allele_data$chromosome=='X']=tumourLogR[allele_data$chromosome=='X']-1
-  }
-  # Create the output data.frames
-  tumor.LogR = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, logr=tumourLogR, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
-  tumor.BAF = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, baf=tumourBAF, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
-  germline.LogR = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, logr=normalLogR, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
-  germline.BAF = data.frame(Chromosome=allele_data$chromosome, Position=allele_data$position, baf=normalBAF, ID=rownames(allele_data), row.names=4, stringsAsFactors=F)
-  colnames(tumor.LogR)[3]=samplename
-  colnames(tumor.BAF)[3]=samplename
-  colnames(germline.LogR)[3]=samplename
-  colnames(germline.BAF)[3]=samplename
-  # Save data.frames to disk
-  write.table(tumor.LogR,file=tumourLogR_file, row.names=T, quote=F, sep="\t", col.names=NA)
-  write.table(tumor.BAF,file=tumourBAF_file, row.names=T, quote=F, sep="\t", col.names=NA)
-  write.table(germline.LogR,file=normalLogR_file, row.names=T, quote=F, sep="\t", col.names=NA)
-  write.table(germline.BAF,file=normalBAF_file, row.names=T, quote=F, sep="\t", col.names=NA)
+
+ 
 }
 
 #' Synchronise SNPs across files
@@ -234,12 +415,17 @@ ascat.prepareHTS = function(tumourseqfile, normalseqfile, tumourname, normalname
   requireNamespace("doParallel")
   requireNamespace("parallel")
   doParallel::registerDoParallel(cores=nthreads)
-  
+
+  if (is.na(normalseqfile) || isna(normalname)) {
+    skipnorm = TRUE
+    skip_allele_counting_normal = TRUE
+  } else skipnorm = FALSE
+
   if (is.na(tumourLogR_file)) tumourLogR_file=paste0(tumourname,"_tumourLogR.txt")
   if (is.na(tumourBAF_file)) tumourBAF_file=paste0(tumourname,"_tumourBAF.txt")
   if (is.na(normalLogR_file)) normalLogR_file=paste0(tumourname,"_normalLogR.txt")
   if (is.na(normalBAF_file)) normalBAF_file=paste0(tumourname,"_normalBAF.txt")
-  
+
   if (!skip_allele_counting_tumour) {
     # Obtain allele counts for 1000 Genomes locations for tumour
     foreach::foreach(CHR=chrom_names) %dopar% {
@@ -267,7 +453,7 @@ ascat.prepareHTS = function(tumourseqfile, normalseqfile, tumourname, normalname
   # Obtain BAF and LogR from the raw allele counts
   ascat.getBAFsAndLogRs(samplename=tumourname,
                         tumourAlleleCountsFile.prefix=paste0(tumourname,"_alleleFrequencies_chr"),
-                        normalAlleleCountsFile.prefix=paste0(normalname,"_alleleFrequencies_chr"),
+                        normalAlleleCountsFile.prefix=if (skipnorm) NA else paste0(normalname,"_alleleFrequencies_chr"),
                         tumourLogR_file=tumourLogR_file,
                         tumourBAF_file=tumourBAF_file,
                         normalLogR_file=normalLogR_file,
@@ -280,11 +466,13 @@ ascat.prepareHTS = function(tumourseqfile, normalseqfile, tumourname, normalname
                         probloci_file=probloci_file)
 
   # Synchronise all information
-  ascat.synchroniseFiles(samplename=tumourname,
+  if (!skipnorm) {
+    ascat.synchroniseFiles(samplename=tumourname,
                          tumourLogR_file=tumourLogR_file,
                          tumourBAF_file=tumourBAF_file,
                          normalLogR_file=normalLogR_file,
                          normalBAF_file=normalBAF_file)
+  }
 }
 
 #' Function to concatenate allele counter output
