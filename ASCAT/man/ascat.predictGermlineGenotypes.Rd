@@ -7,6 +7,7 @@
 ascat.predictGermlineGenotypes(
   ASCATobj,
   platform = "AffySNP6",
+  custom = list(),
   img.dir = ".",
   img.prefix = ""
 )
@@ -15,6 +16,8 @@ ascat.predictGermlineGenotypes(
 \item{ASCATobj}{an ASCAT object}
 
 \item{platform}{used array platform}
+
+\item{custom}{provides a custom setting instead of using predefined platform setting.}
 
 \item{img.dir}{directory in which figures will be written}
 

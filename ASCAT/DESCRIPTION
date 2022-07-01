@@ -33,4 +33,4 @@ Suggests:
     Cairo
 License: GPL-3
 LazyLoad: yes
-RoxygenNote: 7.1.1
+RoxygenNote: 7.1.2

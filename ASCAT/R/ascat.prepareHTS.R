@@ -102,7 +102,7 @@ ascat.getBAFsAndLogRs = function(samplename, tumourAlleleCountsFile.prefix, norm
     TO_KEEP=which(tumour_input_data$REF+tumour_input_data$ALT>=1)
     stopifnot(length(TO_KEEP)>0)
     allele_data=allele_data[TO_KEEP,]
-    tumour_input_data=tumour_input_data[TO_KEEP,]s
+    tumour_input_data=tumour_input_data[TO_KEEP,]
     rm(TO_KEEP)
     # Prepare allele counts to derive BAF and logR
     len = nrow(allele_data)
