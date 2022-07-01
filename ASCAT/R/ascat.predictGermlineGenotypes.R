@@ -3,6 +3,7 @@
 #' is available
 #' @param ASCATobj an ASCAT object
 #' @param platform used array platform
+#' @param custom provides a custom setting instead of using predefined platform setting.
 #' @param img.dir directory in which figures will be written
 #' @param img.prefix prefix for figure names
 #' @details Currently possible values for platform:\cr
@@ -34,12 +35,19 @@
 #' @return predicted germline genotypes
 #'
 #' @export
-ascat.predictGermlineGenotypes = function(ASCATobj, platform = "AffySNP6", img.dir=".", img.prefix="") {
+ascat.predictGermlineGenotypes = function(ASCATobj, platform = "AffySNP6", custom = list(), img.dir=".", img.prefix="") {
   Homozygous = matrix(nrow = dim(ASCATobj$Tumor_LogR)[1], ncol = dim(ASCATobj$Tumor_LogR)[2])
   colnames(Homozygous) = colnames(ASCATobj$Tumor_LogR)
   rownames(Homozygous) = rownames(ASCATobj$Tumor_LogR)
   
-  if (platform=="Custom10k") {
+  if (length(custom) > 1) {
+    maxHomozygous = custom$maxHomozygous
+    proportionHetero = custom$proportionHetero
+    proportionHomo = custom$proportionHomo
+    proportionOpen = custom$proportionOpen
+    segmentLength = custom$segmentLength
+
+  } if (platform=="Custom10k") {
     maxHomozygous = 0.05
     proportionHetero = 0.59
     proportionHomo = 0.38
