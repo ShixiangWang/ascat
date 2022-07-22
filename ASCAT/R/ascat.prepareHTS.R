@@ -416,7 +416,7 @@ ascat.prepareHTS = function(tumourseqfile, normalseqfile, tumourname, normalname
   requireNamespace("parallel")
   doParallel::registerDoParallel(cores=nthreads)
 
-  if (is.na(normalseqfile) || isna(normalname)) {
+  if (is.na(normalseqfile) || is.na(normalname)) {
     skipnorm = TRUE
     skip_allele_counting_normal = TRUE
   } else skipnorm = FALSE
